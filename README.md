@@ -227,4 +227,7 @@ Das HMI-Bild **"Übersicht"** zeigt:
 
 - Die optische Betriebszustandsanzeige der Gesamtanlage (Automatik / Hand / Störung) 
 - Die Anzahl der fertig beladenen und abtransportierten Paletten 
-- Die Anzahl der Produkte, die an nachgelagerte Produktionsbereiche übergeben wurden 
+- Die Anzahl der Produkte, die an nachgelagerte Produktionsbereiche übergeben wurden
+
+  ---
+**Kontakt:** [LinkedIn] www.linkedin.com/in/serhii-bodnia · s.a.bodnya@gmail.com
