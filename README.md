@@ -18,7 +18,16 @@ Rezeptauswahl, Soll-/Istwerte für Füllstand, Füllmenge und Gewicht je Linie, 
 Statusanzeige beider Linien, Produktionsdaten, Palettenzähler, globaler STOP-ALL-Taster.
 ![HMI Übersicht](screenshots/hmi-uebersicht.png)
 
+## Code-Beispiele (SCL)
 
+Auszug aus den zentralen Funktionsbausteinen des Projekts:
+
+- [`FB_Dose_Control.scl`](code/FB_Dose_Control.scl) — Zweistufige Dosierregelung
+  (Schnellfüllung/Feindosierung) mit Volumenstromintegration über OB30-Zykluszeit
+- [`FB_Gewichtkontrolle_SCL.scl`](code/FB_Gewichtkontrolle_SCL.scl) — Schrittkette
+  zur Gewichtsprüfung mit Toleranzband und automatischer Ausschussaussortierung
+- [`FB_Pick_and_Place.scl`](code/FB_Pick_and_Place.scl) — Schrittkette für
+  XYZ-Handling mit palettenweiser Ablage (4 Positionen) und Palettenwechsel-Logik
 
 
 
