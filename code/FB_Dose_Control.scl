@@ -1,0 +1,98 @@
+﻿FUNCTION_BLOCK "FB_Dose_Control"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      Trigger_Start : Bool;
+      Flow_Raw : Real;
+      Target_Volume : Real;
+      Not_Aus : Bool;
+   END_VAR
+
+   VAR_OUTPUT 
+      Discharge_Valve : Real;
+      Dosing_Status : Bool;
+      Füllmenge : Real;
+   END_VAR
+
+   VAR 
+      sTrigger {InstructionName := 'R_TRIG'; LibVersion := '1.0'; S7_SetPoint := 'False'} : R_TRIG;
+      Accumulated_Vol : Real;
+      Dosing_Activate : Bool;
+      Stat_Timer_Reset {InstructionName := 'TOF_TIME'; LibVersion := '1.0'; S7_SetPoint := 'False'} : TOF_TIME;
+   END_VAR
+
+   VAR CONSTANT 
+      C_Q_MAX_M3_S : Real := 0.3543;   // Maximaler Volumenstrom (10V = 0,3543 m³/s) [m³/s]
+      C_OB30_ZEIT_S : Real := 0.01;   // OB30-Zykluszeit (muss mit CPU-Konfig. übereinstimmen) [s]
+      C_M3_TO_L : Real := 1000.0;   // Umrechnungsfaktor Kubikmeter → Liter [l/m³]
+      C_U_MAX_V : Real := 10.0;   // Analogbereich Maximum [V]
+   END_VAR
+
+
+BEGIN
+	REGION Flankenabfragen
+	    // Steigende Flanke des Dosierstarts erfassen (Trigger_Start ist ein Impuls)
+	    #sTrigger(CLK := #Trigger_Start);
+	END_REGION
+	
+	REGION Timers
+	    // TOF: nach Ende der Dosierung bleibt .Q für 1 Sekunde TRUE
+	    // → verhindert sofortiges Rücksetzen von Accumulated_Vol nach Dosierungsende 
+	    #Stat_Timer_Reset(IN := #Dosing_Activate,
+	                      PT := T#1s);
+	    
+	END_REGION
+	
+	REGION #Not_Aus
+	    IF #Not_Aus THEN
+	        #Accumulated_Vol := 0.0;
+	        #Dosing_Activate := FALSE;
+	    END_IF;
+	
+	    
+	END_REGION
+	
+	REGION Dosierung
+	    // Dosierung starten: nur bei steigender Flanke UND wenn Dosierung noch nicht läuft
+	    IF #sTrigger.Q AND NOT #Dosing_Activate THEN
+	        #Accumulated_Vol := 0.0;
+	        #Dosing_Activate := TRUE;
+	    END_IF;
+	    IF #Dosing_Activate THEN
+	        // Volumenstrom integrieren über die OB30-Zykluszeit
+	        // Formel: ΔVol = Flow_Raw / 10.0 * 0.3543 * 0.01 * 1000
+	        
+	        #Accumulated_Vol := #Accumulated_Vol + (#Flow_Raw / #C_U_MAX_V * #C_Q_MAX_M3_S * #C_OB30_ZEIT_S * #C_M3_TO_L);
+	        IF #Accumulated_Vol < (#Target_Volume * 0.85) THEN
+	            // Zweistufige Ventilsteuerung: Großhub bis 85% des Zielvolumens, dann Kleinhub
+	            // Schnellfüllung: Ventil weit offen
+	            #Discharge_Valve := 2.0;
+	        ELSE
+	            // Feindosierung: Ventil fast geschlossen
+	            #Discharge_Valve := 0.05;
+	        END_IF;
+	        IF #Accumulated_Vol >= (#Target_Volume - 0.2) THEN
+	            // Dosierung beenden, wenn Zielvolumen (mit 0,2l Vorhalt) erreicht
+	            #Dosing_Activate := FALSE;
+	        END_IF;
+	    ELSE
+	        // Keine aktive Dosierung: Ventil vollständig schließen
+	        #Discharge_Valve := 0.0;
+	    END_IF;
+	    
+	    IF NOT #Dosing_Activate AND NOT #Stat_Timer_Reset.Q THEN
+	        // Volumenrücksetzung: 1 Sekunde nach Dosierungsende (TOF-Fenster)
+	        // Verhindert sofortiges Löschen der Anzeige nach Abfüllung
+	        #Accumulated_Vol := 0.0;
+	    END_IF;
+	    
+	END_REGION
+	
+	
+	// Statusausgaben für HMI-Anzeige
+	#Dosing_Status := #Dosing_Activate; // TRUE während aktiver Dosierung
+	#Füllmenge := #Accumulated_Vol; // Aktuell abgefüllte Menge für HMI
+	
+	
+END_FUNCTION_BLOCK
+

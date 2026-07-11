@@ -1,0 +1,145 @@
+﻿FUNCTION_BLOCK "FB_Pick & Place"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      Sensor_Teil_detect : Bool;
+      Start_Modus : Bool;
+      Stop_Modus : Bool;
+      Not_Aus_Modus : Bool;
+      Ready_To_Send_Teil : Bool;
+      Ready_To_Receive_Pallet : Bool;
+   END_VAR
+
+   VAR_OUTPUT 
+      X_Set_Point : Real;
+      Y_Set_Point : Real;
+      Z_Set_Point : Real;
+      Grab : Bool;
+      Acknowledge_TeIl_Greifen : Bool;
+      Pallete_voll : Bool;
+      Anzahl_Teil : Int;
+      Rundumleuchte : Bool;
+   END_VAR
+
+   VAR 
+      Teil_Position { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Array[0..3] of Struct
+         X { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real := 8.9;
+         Y { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real := 6.4;
+      END_STRUCT;
+      Zähler : Int;
+      Schritt : Int;
+      "TON_Pick&Place_Schritt_3" {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      "TON_Pick&Place_Schritt_4" {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      "TON_Pick&Place_Schritt_5" {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      "TON_Pick&Place_Schritt_7" {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      "TON_Pick&Place_Schritt_1" {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+   END_VAR
+   VAR RETAIN
+      CTU_Teil {InstructionName := 'CTU_INT'; LibVersion := '1.0'} : CTU_INT;
+   END_VAR
+
+
+BEGIN
+	REGION Timer
+	    // Schritt 1: Wartezeit bis Roboter Greifposition erreicht hat (1500ms)
+	    #"TON_Pick&Place_Schritt_1"(IN:=#Schritt = 1,
+	                                PT:=T#1500ms);
+	    // Schritt 3: Wartezeit Greifer anheben (1000ms)
+	    #"TON_Pick&Place_Schritt_3"(IN := #Schritt = 3,
+	                                PT := T#1s);
+	    // Schritt 4: Wartezeit XY-Verfahren zur Zielposition (1500ms)
+	    #"TON_Pick&Place_Schritt_4"(IN := #Schritt = 4,
+	                                PT := T#1500ms);
+	    // Schritt 5: Wartezeit Greifer absenken (1000ms)
+	    #"TON_Pick&Place_Schritt_5"(IN := #Schritt = 5,
+	                                PT := T#1s);
+	    // Schritt 7: Wartezeit Greifer nach Ablage anheben (1000ms)
+	    #"TON_Pick&Place_Schritt_7"(IN := #Schritt = 7,
+	                                PT := T#1000ms);
+	                             END_REGION
+	                             
+	REGION #Zähler
+	    // Gesamtteilezähler: zählt aufgenommene Teile (steigende Flanke Schritt 3)
+	    #CTU_Teil(CU:= #Schritt = 3,
+	              R:= "FirstScan" OR #Not_Aus_Modus,
+	              PV:=0);
+	    // Ausgabe für HMI-Anzeige
+	    #Anzahl_Teil := #CTU_Teil.CV;
+	END_REGION
+	
+	REGION Rundumleuchte
+	    #Rundumleuchte := #Not_Aus_Modus;
+	END_REGION
+	
+	
+	CASE #Schritt OF
+	    0:  // Initialschritt: Roboter in Heimposition (X=0, Y=0, Z=0), 
+	        #X_Set_Point := 0.0;
+	        #Y_Set_Point := 0.0;
+	        #Z_Set_Point := 0.0;
+	        #Pallete_voll := FALSE;
+	        IF #Start_Modus THEN
+	            #Schritt := 1;
+	        END_IF;
+	    1:  // Roboter zur Greifposition verfahren (X=0.9, Y=9.5, Z bleibt oben)
+	        #X_Set_Point := 0.9;
+	        #Y_Set_Point := 9.5;
+	        IF #Zähler = 0 THEN
+	            #Pallete_voll := FALSE;
+	        END_IF;
+	        IF #Ready_To_Receive_Pallet AND #Ready_To_Send_Teil AND #"TON_Pick&Place_Schritt_1".Q THEN
+	            #Schritt := 2;
+	        END_IF;
+	    2: // Greifer absenken auf Greiflevel (Z=8.7), auf Teildetektierung warten
+	            #Z_Set_Point := 8.7;
+	        IF #Sensor_Teil_detect THEN
+	            #Grab := TRUE;
+	            // Quittierung an vorgelagertes Band
+	            #Acknowledge_TeIl_Greifen := TRUE;
+	            #Schritt := 3;
+	        END_IF;
+	    3: // Greifer anheben mit Teil (Z=0), Quittierung zurücksetzen, Verfahrzeit abwarten
+	        #Z_Set_Point := 0.0;
+	        // Quittierung zurücksetzen (Einmalig)
+	        #Acknowledge_TeIl_Greifen := FALSE;
+	        IF #"TON_Pick&Place_Schritt_3".Q THEN
+	            #Schritt := 4;
+	        END_IF;
+	    4: // XY-Verfahren zur Ablageposition auf Palette (aus Teil_Position-Array)
+	       // Zähler bestimmt die aktuelle Ablageposition (0–3, insgesamt 4 Positionen)
+	        #X_Set_Point := #Teil_Position[#Zähler].X;
+	        #Y_Set_Point := #Teil_Position[#Zähler].Y;
+	        IF #"TON_Pick&Place_Schritt_4".Q THEN
+	            #Schritt := 5;
+	        END_IF;
+	    5: // Greifer zur Ablageposition absenken (Z=8.7), Verfahrzeit abwarten
+	        #Z_Set_Point := 8.7;
+	        IF #"TON_Pick&Place_Schritt_5".Q THEN
+	            #Schritt := 6; 
+	        END_IF;
+	    6: // Teil ablegen: Greifer öffnen, sofort weiter zu Schritt 7
+	        #Grab := FALSE;
+	        #Schritt := 7;
+	    7: // Greifer nach Ablage anheben, Zähler inkrementieren, zurück zur Greifposition
+	        #Z_Set_Point := 0.0;
+	        IF #"TON_Pick&Place_Schritt_7".Q THEN
+	            // Nächste Ablageposition
+	            #Zähler := #Zähler + 1;
+	            #Schritt := 1;
+	        END_IF;
+	        // Palette voll nach 4 Teilen (Positionen 0–3): Palette ausschleusen
+	        IF #Zähler >= 4 THEN
+	            // Zähler für neue Palette zurücksetzen
+	            #Zähler := 0;
+	            // Signal: Palette vollständig beladen
+	            #Pallete_voll := TRUE;
+	        END_IF;
+	    ELSE  // Unbekannter Schritt: bei Not-Aus Rücksprung in Initialschritt
+	        IF #Not_Aus_Modus THEN
+	            #Schritt := 0;
+	        END_IF;
+	        
+	END_CASE;
+	
+END_FUNCTION_BLOCK
+

@@ -1,0 +1,229 @@
+﻿FUNCTION_BLOCK "FB_Gewichtkontrolle_SCL"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      Start_Mode : Bool;
+      Stop_Mode : Bool;
+      NotAus_Mode : Bool;
+      LS_Einlauf : Bool;
+      LS_Mitte : Bool;
+      LS_Auslauf : Bool;
+      LS_Wage : Bool;
+      LS_Pusher : Bool;
+      Gewichtsskala : Real;
+      Referenz_Gewicht : Real;
+      Reset_CTU_Gesamtteile : Bool;
+      Reset_CTU_Ausschuss : Bool;
+      Quittierung : Bool;
+   END_VAR
+
+   VAR_OUTPUT 
+      Waage_Band : Bool;
+      Pusher_Band : Bool;
+      Gewicht_Kg { ExternalWritable := 'False'} : Real;
+      Remover : Bool;
+      Pusher : Bool;
+      Out_Gesamtteile : Int;
+      Out_Ausschuss : Int;
+      Ready_To_Send_Teil : Bool;
+      Störung : Bool;
+   END_VAR
+
+   VAR 
+      iSchritt : Int;
+      Trigger_Pos_LS_Einlauf {InstructionName := 'R_TRIG'; LibVersion := '1.0'; S7_SetPoint := 'False'} : R_TRIG;
+      Trigger_Neg_LS_Auslauf {InstructionName := 'F_TRIG'; LibVersion := '1.0'} : F_TRIG;
+      Trigger_Pos_LS_Mitte {InstructionName := 'R_TRIG'; LibVersion := '1.0'} : R_TRIG;
+      Trigger_Neg_LS_Mitte {InstructionName := 'F_TRIG'; LibVersion := '1.0'} : F_TRIG;
+      Trigger_Neg_LS_Wage {InstructionName := 'F_TRIG'; LibVersion := '1.0'} : F_TRIG;
+      Trigger_Neg_LS_Pusher {InstructionName := 'F_TRIG'; LibVersion := '1.0'} : F_TRIG;
+      TON_weit_Wiegung_1000ms {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      TON_Puscher_100ms {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      TON_Ende_weit_1000ms {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      TOF_2000ms {InstructionName := 'TOF_TIME'; LibVersion := '1.0'} : TOF_TIME;
+      Actuell_Gewicht { S7_SetPoint := 'True'} : Real;
+      Gewicht_Norm { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+      Gespeichertes_Gewicht : Real;
+      Gesamtteile { S7_SetPoint := 'True'} : Int;
+      Ausschuss { S7_SetPoint := 'True'} : Int;
+      TON_Störung_LS_Wage {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      TON_Störung_LS_Mitte {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      TON_Störung_LS_Pusher {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      TON_Störung_Auslauf {InstructionName := 'TON_TIME'; LibVersion := '1.0'} : TON_TIME;
+      M_Störung { S7_SetPoint := 'True'} : Bool;
+      M_Wage_Band : Bool;
+      M_Pusher_Band : Bool;
+   END_VAR
+
+   VAR CONSTANT 
+      Toleranz : Real := 1.02;
+   END_VAR
+
+
+BEGIN
+	REGION NotAus & Störung
+	    IF #NotAus_Mode OR #M_Störung THEN
+	        // Bei Not-Aus or Störung sofortiger Rücksprung in den Initialschritt (Schritt 0)
+	        #iSchritt := 0;
+	    END_IF;
+	END_REGION
+	
+	REGION Reset
+	    IF #Reset_CTU_Gesamtteile OR #NotAus_Mode OR "FirstScan" THEN
+	        // Gesamtteilezähler zurücksetzen: bei HMI-Anforderung, Not-Aus oder Erstaufruf
+	        #Gesamtteile := 0;
+	    END_IF;
+	    
+	    IF #Reset_CTU_Ausschuss OR #NotAus_Mode OR "FirstScan" THEN
+	        // Ausschusszähler zurücksetzen: bei HMI-Anforderung, Not-Aus oder Erstaufruf
+	        #Ausschuss := 0;
+	  
+	    END_IF;
+	    
+	END_REGION
+	
+	REGION Flankenabfragen
+	    #Trigger_Pos_LS_Einlauf(CLK := #LS_Einlauf); 
+	    #Trigger_Pos_LS_Mitte(CLK := #LS_Mitte);     
+	    #Trigger_Neg_LS_Mitte(CLK := #LS_Mitte);
+	    #Trigger_Neg_LS_Auslauf(CLK := #LS_Auslauf);
+	    #Trigger_Neg_LS_Wage(CLK := #LS_Wage);
+	    #Trigger_Neg_LS_Pusher(CLK := #LS_Pusher);
+	END_REGION
+	
+	REGION Timers
+	    // Wiegezeit: 500ms Wartezeit für stabile Gewichtsmessung (Schritt 2)
+	    #TON_weit_Wiegung_1000ms(IN := (#iSchritt = 2),
+	                             PT := T#500ms);
+	    // Pusher-Impuls: 100ms Aktivierungszeit für Pusher-Zylinder (Schritt 11)
+	    #TON_Puscher_100ms(IN := #iSchritt = 11,
+	                       PT := T#100ms);
+	    // Remover-Wartezeit: 1000ms bis Remover das Ausschussteil aufgenommen hat (Schritt 12)
+	    #TON_Ende_weit_1000ms(IN := (#iSchritt = 12),
+	                          PT := T#1000ms);
+	    // Anzeigedauer Gewicht: Messwert 2 Sekunden nach Wiegung sichtbar halten (Schritt 2)
+	    #TOF_2000ms(IN := (#iSchritt = 2),
+	                PT := T#2000ms);
+	    // Störungserkennung: wenn Licht_Sensors länger als 10s aktiv und Band läuft → Stau
+	
+	    #TON_Störung_LS_Wage(IN := #LS_Wage AND #M_Wage_Band AND NOT #Stop_Mode,
+	                         PT := T#10s);
+	    #TON_Störung_LS_Mitte(IN := #LS_Mitte AND #M_Wage_Band AND NOT #Stop_Mode,
+	                          PT := T#10s);
+	    #TON_Störung_LS_Pusher(IN := #LS_Pusher AND #M_Pusher_Band AND NOT #Stop_Mode,
+	                          PT := T#10s);
+	    #TON_Störung_Auslauf(IN := #LS_Auslauf AND #M_Pusher_Band AND NOT #Stop_Mode,
+	                         PT := T#10s);
+	    
+	END_REGION
+	
+	REGION Scalierung_Gewicht
+	    // Rohwert Wiegezelle (0–10 V analog) auf 0–20 kg normieren und skalieren
+	    #Gewicht_Norm := NORM_X(MIN := 0.0, VALUE := #Gewichtsskala, MAX := 10.0);
+	    #Actuell_Gewicht:= SCALE_X_REAL(MIN := 0.0, VALUE := #Gewicht_Norm, MAX := 20.0);
+	    
+	END_REGION
+	
+	REGION Meldungen
+	    // Störungserkennung: wenn LS_Einlauf oder LS_Auslauf länger als 10s aktiv und Band läuft → Stau
+	    IF (#TON_Störung_LS_Wage.Q OR #TON_Störung_LS_Mitte.Q)
+	        OR (#TON_Störung_LS_Pusher.Q OR #TON_Störung_Auslauf.Q) THEN
+	        // Störungsmerker setzen
+	        #M_Störung := TRUE;
+	    END_IF;
+	    // Störung über HMI quittieren: Bit des Quittierungswortes (HMI_Quittierung.%X0)
+	    IF #Quittierung THEN
+	        #M_Störung := FALSE;
+	    END_IF;
+	    
+	END_REGION
+	
+	
+	REGION Schrittkette
+	    CASE #iSchritt OF
+	        0:  // Initialschritt: Warten auf Teil am Einlauf UND Startmodus
+	            IF #Trigger_Pos_LS_Einlauf.Q AND #Start_Mode THEN
+	                #iSchritt := 1;
+	            END_IF;
+	        1:  // Waageband läuft; Gesamtteilezähler erhöhen, wenn Teil die Waage erreicht
+	            IF #Trigger_Neg_LS_Wage.Q THEN
+	                #Gesamtteile := #Gesamtteile + 1;
+	                #iSchritt := 2;
+	            END_IF;
+	        2:  // Wiegung: Band gestoppt, 500ms warten für stabile Messwerterfassung
+	            IF #TON_weit_Wiegung_1000ms.Q THEN
+	                #Gespeichertes_Gewicht := #Actuell_Gewicht;
+	                #iSchritt := 3;
+	            END_IF;
+	        3:  // Gewichtsprüfung: bei LS_Mitte-Flanke Toleranzband prüfen
+	            // Toleranzband: Referenz/1,02 ≤ Gewicht ≤ Referenz*1,02 (±2%)
+	            IF #Trigger_Pos_LS_Mitte.Q THEN
+	                IF (#Gespeichertes_Gewicht <= #Referenz_Gewicht * #Toleranz)
+	                    AND (#Gespeichertes_Gewicht >= #Referenz_Gewicht / #Toleranz) THEN
+	                    #iSchritt := 4;
+	                ELSE
+	                    #Ausschuss := #Ausschuss + 1;
+	                    #iSchritt := 10;
+	                END_IF;
+	            END_IF;
+	        4:  // Waageband UND Pusherband laufen; warten bis Teil Mitte verlässt
+	            IF #Trigger_Neg_LS_Mitte.Q THEN
+	                #iSchritt := 5;
+	            END_IF;
+	        5: // Waageband AUS, Pusherband läuft; Teil zum Auslauf befördern
+	           // Sobald Teil den Auslauf verlässt: prüfen ob schon nächstes Teil wartet
+	            IF #Trigger_Neg_LS_Auslauf.Q THEN
+	                IF #LS_Einlauf THEN
+	                    #iSchritt := 1; // Nächstes Teil sofort verarbeiten
+	                ELSE
+	                    #iSchritt := 0; // Kein weiteres Teil → Initialschritt
+	                END_IF;
+	            END_IF;
+	        10: // Ausschleuspfad: Pusherband läuft; Teil zum Pusher-Lichtschranke befördern
+	            IF #Trigger_Neg_LS_Pusher.Q THEN
+	                #iSchritt := 11;
+	            END_IF;
+	        11: // Pusher aktivieren für 100ms (Ausschussteil seitwärts ausschieben)
+	            IF #TON_Puscher_100ms.Q THEN
+	                #iSchritt := 12;
+	            END_IF;
+	        12: // Remover aktiv für 1000ms (Ausschussteil endgültig entfernen)
+	            IF #TON_Ende_weit_1000ms.Q THEN
+	                #iSchritt := 0; // Zurück zum Initialschritt
+	            END_IF;
+	        
+	    END_CASE;
+	   
+	END_REGION
+	REGION Actoren
+	    // 1. Wage_Band
+	    #M_Wage_Band := (#iSchritt = 1 OR #iSchritt = 3 OR #iSchritt = 4 OR #iSchritt = 10) AND NOT #Stop_Mode;
+	    #Waage_Band := #M_Wage_Band;
+	    // 2. Pusher_Band
+	    #M_Pusher_Band:= (#iSchritt = 4 OR #iSchritt = 5 OR #iSchritt = 10 OR #iSchritt =11 OR #iSchritt =12) AND NOT #Stop_Mode;
+	    #Pusher_Band := #M_Pusher_Band;
+	    // 3. Pusher
+	    #Pusher := #iSchritt = 11;
+	    // 4. Remover
+	    #Remover := #iSchritt = 12;
+	    // 5. Zähler
+	    #Out_Gesamtteile := #Gesamtteile;
+	    #Out_Ausschuss := #Ausschuss;
+	    // 
+	    #Ready_To_Send_Teil := NOT #Stop_Mode AND (#iSchritt = 4 OR  #iSchritt = 5);
+	    
+	END_REGION
+	REGION Gewicht anzeige
+	    // Gewichtsanzeige: Messwert 2 Sekunden nach Wiegung anzeigen, danach auf 0 setzen
+	    // TOF bleibt 2s aktiv nachdem Schritt 2 verlassen wurde
+	    IF #TOF_2000ms.Q THEN
+	        #Gewicht_Kg := #Gespeichertes_Gewicht;
+	    ELSE
+	        #Gewicht_Kg := 0.0;
+	    END_IF;
+	END_REGION
+	
+	
+	
+END_FUNCTION_BLOCK
+
